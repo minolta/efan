@@ -14,6 +14,11 @@
 #include <DallasTemperature.h>
 #include "Configfile.h"
 #include "Apmode.h"
+#define TMPMODE 1
+#define DIRMODE 2
+#define MMODE 3
+#define ENABLEPORT 26 // สำหรับตัดเข้าระบบเราถ้า ESP ทำงาน ok
+
 void tickerfunction();
 void setconfig();
 void loadconfigtoram();
@@ -39,8 +44,15 @@ int jsonsize = 2048;
 int duty = 0;
 int toduty = 0; // เป็นตัวกำหนดให้ duty เท่ากับอันนี้
 int torun = 0;
+int tmpduty = 0;
+int readtimetime = 0;
+int currentvalue = 0;
 float t = 0;
+float t1 = 0;
 String message;
+int runmode = TMPMODE;
+int maxtmp = 0;
+String runmodename = "";
 const char configfile_html[] PROGMEM = R"rawliteral(
 <!DOCTYPE HTML><html><head>
   <title>Config</title>
@@ -144,6 +156,24 @@ function add()
  });
   xhr.send();
 }
+function run()
+{
+  var xhr = new XMLHttpRequest();
+  var input = document.getElementById('timetorun');
+  var value = document.getElementById('level');
+  xhr.open("GET", "/run?delay="+input.value+"&p="+value.value, true); 
+  xhr.addEventListener("readystatechange", () => {
+     console.log(xhr.readystate);
+    if (xhr.readyState === 4 && xhr.status === 200) {
+     console.log(xhr.responseText);
+    //  var o =  JSON.parse(xhr.responseText);
+    //  var t = document.getElementById('customers');
+    //  var row = t.insertRow();
+    //  row.innerHTML = "<td>"+o.setconfig+"</td><td>"+o.value+"</td><td><input value="+o.value+"></td>";
+     }
+ });
+  xhr.send();
+}
 function setvalue(element,configname,value) {
   console.log("Call",element);
   var xhr = new XMLHttpRequest();
@@ -165,6 +195,34 @@ function setvalue(element,configname,value) {
         });
   xhr.send();
 }
+
+setInterval(()=>{
+  
+  var xhr = new XMLHttpRequest();
+  xhr.open("GET", "/info", true); 
+  xhr.addEventListener("readystatechange", () => {
+    if (xhr.readyState === 4 && xhr.status === 200) {
+    console.log(xhr.responseText);
+    var o =  JSON.parse(xhr.responseText);
+    console.log('O',o);
+    var tmp1 = document.getElementById("tmp1"); 
+    tmp1.innerHTML = o.t 
+    var tmp2 = document.getElementById("tmp2"); 
+    tmp2.innerHTML = o.t1 
+    var duty = document.getElementById("duty"); 
+    duty.innerHTML = o.duty 
+    var runmodename = document.getElementById("runmodename"); 
+    runmodename.innerHTML = o.runmodename
+    var uptime = document.getElementById("uptime"); 
+    uptime.innerHTML = o.uptime 
+    } else if (xhr.readyState === 4) {
+     console.log("could not fetch the data");
+     }
+    });
+  xhr.send();
+  console.log('Call refresh');
+}
+, 500); // 3000 milliseconds = 3 seconds
 </script>
   </head><body>
  <table id="customers">
@@ -176,8 +234,26 @@ function setvalue(element,configname,value) {
 <hr>
 New Config <input id=newconfigname> <input id=newvalue> <button  id=btn onClick="add()">add </button>
 <hr>
+Directrun  <input id=timetorun> <input id=level> <button  id=btn onClick="run()">Run </button>
+<hr>
 <button id=btn onClick="deleteallconfig()">Reset Config</button>
-
+<table id="customers">
+ <tr>
+  <td>uptime</td><td><label id="uptime">0</label></td>
+  </tr>
+  <tr>
+  <td>TMP1</td><td><label id="tmp1">0</label></td>
+  </tr>
+  <tr>
+  <td>TMP2</td><td><label id="tmp2">0</label></td>
+  </tr>
+    <tr>
+  <td>DUTY</td><td><label id="duty">0</label></td>
+  </tr>
+     <tr>
+  <td>Mode</td><td><label id="runmodename">0</label></td>
+  </tr>
+ </table>
 </body></html>)rawliteral";
 struct
 {
@@ -185,10 +261,15 @@ struct
   int apmodelimit = 30;
   int torundelay = 10;
   int haveds = 0;
+  int haveapmode = 1;
   int r040 = 20;
   int r4160 = 40;
   int r6180 = 60;
   int r81100 = 100;
+  int readtmptime = 30;
+  int printadc = 1;
+  int printruntmp = 1;
+  int servermode = 1;
 } configdata;
 void setup()
 {
@@ -199,12 +280,16 @@ void setup()
   connect();
   setHttp();
   if (configdata.haveds)
+  {
+    readtimetime = 500; //
     sensors.begin();
+  }
 }
 
 void setupPort()
 {
   pinMode(2, OUTPUT);
+  pinMode(ENABLEPORT, OUTPUT);
   adc1_config_width(ADC_WIDTH_BIT_12);
   adc1_config_channel_atten(ADC1_CHANNEL_0, ADC_ATTEN_DB_11); // สำหรับอ่าน แรงดัน batt
   adc1_config_channel_atten(ADC1_CHANNEL_3, ADC_ATTEN_DB_11); // สำหรับ pressure sensor
@@ -247,6 +332,7 @@ void decpressure()
 
 void run(AsyncWebServerRequest *request)
 {
+  runmode = DIRMODE;
   DynamicJsonDocument doc(jsonsize);
   char buf[jsonsize];
 
@@ -280,7 +366,7 @@ void run(AsyncWebServerRequest *request)
   }
   else if (request->hasParam("delay"))
   {
-    Serial.println("Open pump");
+    Serial.println("DIRECT mode");
     int t = request->getParam("delay")->value().toInt();
     torun = t * 2;
     if (request->hasParam("p"))
@@ -315,7 +401,12 @@ String makestatus()
   doc["torun"] = torun;
   doc["toduty"] = toduty;
   doc["duty"] = duty;
+  doc["tmpduty"] = tmpduty;
   doc["t"] = t;
+  doc["t1"] = t1;
+  doc["runmode"] = runmode;
+  doc["currentadc"] = currentvalue;
+  doc["runmodename"] = runmodename;
   char buf[jsonsize];
   serializeJsonPretty(doc, buf, jsonsize);
   return String(buf);
@@ -379,7 +470,7 @@ void resettodefault(AsyncWebServerRequest *request)
 }
 void setHttp()
 {
-  server.on("/", HTTP_GET, status);
+  server.on("/", HTTP_GET, setwwwconfig);
   server.on("/status", HTTP_GET, status);
   server.on("/addconfig", HTTP_GET, addconfig);
   server.on("/allconfig", HTTP_GET, allconfig);
@@ -395,7 +486,7 @@ void setHttp()
   // server.on("/scanwifi", HTTP_GET, setwifi);
   // // server1.on("/scanwifiii", HTTP_GET, scanwifiII);
   // server.on("/get", HTTP_GET, get);
-  // server.on("/restart", HTTP_GET, restart);
+  server.on("/info", HTTP_GET, status);
   server.on("/removeconfig", HTTP_GET, removeconfig);
   server.on("/resettodefault", HTTP_GET, resettodefault);
 
@@ -423,58 +514,88 @@ void loadconfigtoram()
 {
   configdata.torundelay = cfg.getIntConfig("torundelay", 10);
   configdata.haveds = cfg.getIntConfig("haveds", 0);
-  configdata.r040 = cfg.getIntConfig("0-40",20);
-  configdata.r4160 = cfg.getIntConfig("41-60",40);
-  configdata.r6180 = cfg.getIntConfig("61-80",60);
-  configdata.r81100 = cfg.getIntConfig("81-100",100);
+  configdata.r040 = cfg.getIntConfig("0-20", 20);
+  configdata.r4160 = cfg.getIntConfig("21-40", 40);
+  configdata.r6180 = cfg.getIntConfig("41-80", 80);
+  configdata.r81100 = cfg.getIntConfig("81-100", 100);
+  configdata.haveapmode = cfg.getIntConfig("haveapmode", 1);
+  configdata.printadc = cfg.getIntConfig("printadc", 1);
+  configdata.printruntmp = cfg.getIntConfig("printruntmp", 1);
+  configdata.servermode = cfg.getIntConfig("servermode", 1);
 }
 void tickerfunction()
 {
   digitalWrite(2, !digitalRead(2));
   uptime += 2;
   if (torun > 0)
+  {
     torun--;
+    if (torun <= 0)
+      runmode = TMPMODE;
+  }
+  readtimetime++;
+}
+void servermode()
+{
+  String ssid = cfg.getConfig("servername", "EFAN");
+  String password = cfg.getConfig("serverpassword", "123456789");
+  WiFi.softAP(ssid.c_str(), password.c_str());
+  IPAddress IP = WiFi.softAPIP();
+  Serial.print("AP IP address: ");
+  Serial.println(IP);
+  // setHttp();
 }
 void connect()
 {
-  int l = 0;
-  int connectwifilimit = cfg.getIntConfig("connectwifilimit", 10);
-  String u = cfg.getConfig("ssid");
-  String p = cfg.getConfig("password");
-  Serial.printf("\nconnect to %s with password %s\n", u.c_str(), p.c_str());
-  WiFi.mode(WIFI_STA);
-  WiFi.begin(cfg.getConfig("ssid", "forpi").c_str(), cfg.getConfig("password", "04qwerty").c_str());
-  WiFi.setSleep(false);
-  Serial.print("Connect");
-  while (WiFi.status() != WL_CONNECTED)
+  if (!configdata.servermode)
   {
-    Serial.print(".");
-
-    if (l > connectwifilimit)
+    int l = 0;
+    int connectwifilimit = cfg.getIntConfig("connectwifilimit", 10);
+    String u = cfg.getConfig("ssid");
+    String p = cfg.getConfig("password");
+    Serial.printf("\nconnect to %s with password %s\n", u.c_str(), p.c_str());
+    WiFi.mode(WIFI_STA);
+    WiFi.begin(cfg.getConfig("ssid", "forpi").c_str(), cfg.getConfig("password", "04qwerty").c_str());
+    WiFi.setSleep(false);
+    Serial.print("Connect");
+    while (WiFi.status() != WL_CONNECTED)
     {
-      apmode = 1;
-      break;
+      Serial.print(".");
+
+      if (l > connectwifilimit)
+      {
+        apmode = 1;
+        break;
+      }
+      delay(1000);
+      l++;
     }
-    delay(1000);
-    l++;
+
+    if (WiFi.status() == WL_CONNECTED)
+    {
+      Serial.print("************ Ip:");
+      Serial.println(WiFi.localIP());
+      // gateway = WiFi.gatewayIP();
+    }
+    if (apmode && configdata.haveapmode)
+    {
+      ap.setrestartmode(cfg.getIntConfig("aprestart", 1)); // บอกให้ ap restart
+      ap.setapmodetime(cfg.getIntConfig("aptime", 3));     // เวลาที่เปิด AP mode
+
+      Serial.println("Ap Mode");
+      ap.run();
+    }
   }
 
-  if (WiFi.status() == WL_CONNECTED)
+  else
   {
-    Serial.print("************ Ip:");
-    Serial.println(WiFi.localIP());
-    // gateway = WiFi.gatewayIP();
-  }
-  if (apmode)
-  {
-    Serial.println("Ap Mode");
-    ap.run();
+    servermode();
   }
 }
 
 void directrun()
 {
-  if (toduty != duty)
+  if (toduty != duty && runmode == DIRMODE)
   {
     if (duty < toduty)
     {
@@ -486,7 +607,7 @@ void directrun()
       // decpressure();
       duty--;
     }
-    out(duty);
+
     delay(configdata.torundelay);
   }
 
@@ -499,48 +620,161 @@ void directrun()
 
 void readTmp()
 {
-  if (configdata.haveds)
+
+  if (configdata.haveds && runmode == TMPMODE && readtimetime >= configdata.readtmptime)
   {
+    // t = 0;
+    // t1 = 0;
+    readtimetime = 0;
+    float buf = 0;
     sensors.requestTemperatures();
-    t = sensors.getTempCByIndex(0);
+    int sensorcount = sensors.getDeviceCount();
+    if (sensorcount > 0)
+    {
+      buf = sensors.getTempCByIndex(0);
+      if (buf > 0)
+        t = buf;
+      if (sensorcount > 1)
+      {
+
+        buf = sensors.getTempCByIndex(1);
+        if (buf > 0)
+          t1 = buf;
+      }
+    }
   }
 }
-void runtmp()
+int getTmp(float t1)
 {
-  if(configdata.haveds)
-  {
   int tt = 0;
-  if (t <= configdata.r040)
+  if (t1 <= configdata.r040)
   {
     tt = configdata.r040;
   }
-  else if (t <= configdata.r4160)
+  else if (t1 <= configdata.r4160)
   {
     tt = configdata.r4160;
   }
-  else if (t <= configdata.r6180)
+  else if (t1 <= configdata.r6180)
   {
     tt = configdata.r6180;
   }
-  else if (t <= configdata.r81100)
+  else if (t1 <= configdata.r81100)
   {
-    tt =configdata.r81100;
+    tt = configdata.r81100;
   }
-  else
-    tt = 0;
 
-  int p = 1023 / 100 * tt;
-  Serial.printf("Run tmp %.2f P:%d\n",t,p);
-  out(p);
-  delay(500);
+  return tt;
+}
+void runtmp()
+{
+  if (configdata.haveds && runmode == TMPMODE)
+  {
+    int tt = getTmp(t);
+    int tt1 = getTmp(t1);
+    maxtmp = 0;
+    if (tt < tt1)
+      maxtmp = tt1;
+    else
+      maxtmp = tt;
+
+    if (maxtmp != 0)
+    {
+      int p = 1023 / 100 * maxtmp;
+      if (configdata.printruntmp)
+        Serial.printf("Run tmp %.2f P:%d == %d\n", t, p, tmpduty);
+      if (p != tmpduty)
+      {
+        tmpduty = p;
+      }
+    }
   }
 }
+void to(int d, int t, String call)
+{
+  if (d < t)
+  {
+    duty++;
+    Serial.printf("%s Inc Duty to t  %d/%d \n", call.c_str(), d, t);
+    delay(20);
+  }
+  else if (d > t)
+  {
+    duty--;
+    Serial.printf("%s Dec Duty to t  %d/%d \n", call.c_str(), d, t);
+    delay(20);
+  }
+}
+/**
+ * @brief สำหรับ tmp
+ *
+ */
+void updateduty()
+{
+  // ถ้า duty ไม่เท่ากับ tmpduty และ toduty =0 ระบบจะทำงาน
+  if (runmode == TMPMODE && tmpduty != duty)
+  {
+    to(duty, tmpduty, "TMP MODE");
+    digitalWrite(25, 1);
+    runmodename = "TMP MODE";
+  }
+  else if (runmode == MMODE && currentvalue != duty)
+  {
+    int p = 1023 / 100 * currentvalue;
+    to(duty, p, "MMODE");
+    runmodename = "MMODE";
+    digitalWrite(25, 0);
+  }
+  else if (runmode == DIRMODE && duty != toduty)
+  {
+    to(duty, toduty, "DIRMODE");
+    runmodename = "DIR MODE";
+    digitalWrite(25, 0);
+  }
+}
+/***
+ * บอกว่าเครื่องทำงานปกติ
+ */
+void checkRun()
+{
+  if (duty > 0)
+    digitalWrite(ENABLEPORT, 1);
+  else
+    digitalWrite(ENABLEPORT, 0);
+}
+void readADC()
+{
+  float val = 0;
+  int backuprunmode = runmode;
+  for (int i = 0; i < 16; i++)
+    val += adc1_get_raw(ADC1_CHANNEL_3);
+  val /= 16;
+
+  if (val > 20)
+  {
+    // Serial.printf("ADC VALUE %.2f\n", val);
+    currentvalue = val / 4095 * 100;
+    if (currentvalue != 0)
+      runmode = MMODE;
+    if (configdata.printadc)
+    {
+      Serial.printf("ADC: %.2f  Currentvalue:%d \n", val, currentvalue);
+      delay(200);
+    }
+  }
+  else if (runmode != DIRMODE)
+  {
+    runmode = TMPMODE; // กลับไป tmp mode ถ้าไม่อยู่ใน mode direct
+  }
+}
+
 void loop()
 {
-  // put your main code here, to run repeatedly:
-  //
   directrun();
   readTmp();
   runtmp();
-  // delay(1000);
+  updateduty();
+  checkRun();
+  readADC();
+  out(duty);
 }
