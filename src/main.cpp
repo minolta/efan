@@ -53,6 +53,7 @@ String message;
 int runmode = TMPMODE;
 int maxtmp = 0;
 String runmodename = "";
+int rundns = 0;
 const char configfile_html[] PROGMEM = R"rawliteral(
 <!DOCTYPE HTML><html><head>
   <title>Config</title>
@@ -535,15 +536,35 @@ void tickerfunction()
   }
   readtimetime++;
 }
+KDNSServer dnsServer;
 void servermode()
 {
+
+  rundns = 1;
   String ssid = cfg.getConfig("servername", "EFAN");
   String password = cfg.getConfig("serverpassword", "123456789");
+
+  const byte DNS_PORT = 53;      // Capture DNS requests on port 53
+  IPAddress apIP(10, 10, 10, 1); // Private network for server
+                                 // Create the DNS object
+
+  WiFi.mode(WIFI_AP);
+  WiFi.softAPConfig(apIP, apIP, IPAddress(255, 255, 255, 0));
+  // WiFi.softAP(apname.c_str()); // WiFi name
+
+  // if DNSServer is started with "*" for domain name, it will reply with
+  // provided IP to all DNS request
+  // dnsServer.start(DNS_PORT, "*", apIP);
   WiFi.softAP(ssid.c_str(), password.c_str());
+
   IPAddress IP = WiFi.softAPIP();
   Serial.print("AP IP address: ");
   Serial.println(IP);
   // setHttp();
+  // while (true)
+  // {
+  // dnsServer.processNextRequest();
+  // }
 }
 void connect()
 {
@@ -581,12 +602,10 @@ void connect()
     {
       ap.setrestartmode(cfg.getIntConfig("aprestart", 1)); // บอกให้ ap restart
       ap.setapmodetime(cfg.getIntConfig("aptime", 3));     // เวลาที่เปิด AP mode
-
       Serial.println("Ap Mode");
       ap.run();
     }
   }
-
   else
   {
     servermode();
@@ -620,7 +639,6 @@ void directrun()
 
 void readTmp()
 {
-
   if (configdata.haveds && runmode == TMPMODE && readtimetime >= configdata.readtmptime)
   {
     // t = 0;
@@ -636,7 +654,6 @@ void readTmp()
         t = buf;
       if (sensorcount > 1)
       {
-
         buf = sensors.getTempCByIndex(1);
         if (buf > 0)
           t1 = buf;
@@ -767,7 +784,13 @@ void readADC()
     runmode = TMPMODE; // กลับไป tmp mode ถ้าไม่อยู่ใน mode direct
   }
 }
-
+void rundnsf()
+{
+  if (rundns)
+  {
+    dnsServer.processNextRequest();
+  }
+}
 void loop()
 {
   directrun();
@@ -776,5 +799,6 @@ void loop()
   updateduty();
   checkRun();
   readADC();
+  // rundnsf();
   out(duty);
 }

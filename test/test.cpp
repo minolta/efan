@@ -363,8 +363,8 @@ void setup()
   delay(2000);
   UNITY_BEGIN();
   // RUN_TEST(testgetvalue);
-  // RUN_TEST(testDS18b20);
-  RUN_TEST(testAPMODE);
+  RUN_TEST(testDS18b20);
+  // RUN_TEST(testAPMODE);
   UNITY_END();
 }
 
