@@ -14,6 +14,7 @@
 #include <DallasTemperature.h>
 #include "Configfile.h"
 #include "Apmode.h"
+#include "driver/gpio.h"
 #define TMPMODE 1
 #define DIRMODE 2
 #define MMODE 3
@@ -254,6 +255,7 @@ Directrun  <input id=timetorun> <input id=level> <button  id=btn onClick="run()"
      <tr>
   <td>Mode</td><td><label id="runmodename">0</label></td>
   </tr>
+  
  </table>
 </body></html>)rawliteral";
 struct
@@ -290,6 +292,7 @@ void setup()
 void setupPort()
 {
   pinMode(2, OUTPUT);
+  gpio_pullup_en(GPIO_NUM_32);
   pinMode(ENABLEPORT, OUTPUT);
   adc1_config_width(ADC_WIDTH_BIT_12);
   adc1_config_channel_atten(ADC1_CHANNEL_0, ADC_ATTEN_DB_11); // สำหรับอ่าน แรงดัน batt
